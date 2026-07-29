@@ -18,3 +18,6 @@ data/processed/*.csv
 # OS files
 .DS_Store
 Thumbs.db
+
+# RStudio project files
+.Rproj.user/
