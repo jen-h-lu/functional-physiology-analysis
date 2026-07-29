@@ -1,0 +1,1236 @@
+---
+title: "Advanced Statistical Learning for Physiological Stress Prediction"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Predicting physiological stress requires models capable of identifying complex patterns in cardiovascular signals while remaining interpretable and statistically rigorous.
+
+Previous notebooks introduced preprocessing, feature engineering, Bayesian modeling, mixed-effects models, and machine learning using heart rate data. This notebook synthesizes those analyses by comparing multiple statistical learning methods for stress classification across the WESAD dataset.
+
+Objectives:
+
+1. Engineer informative heart rate features
+2. Explore feature relationships
+3. Visualize physiological structure using PCA
+4. Compare multiple statistical learning algorithms
+5. Evaluate predictive performance
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(here)
+library(pROC)
+library(MASS)
+library(class)
+library(rpart)
+library(rpart.plot)
+library(brms)
+```
+
+# Load Heart Rate Files
+
+```{r}
+# Load Heart Rate Files
+
+hr_files <- list.files(
+  here("data","processed"),
+  pattern="_heart_rate.csv$",
+  full.names=TRUE
+)
+
+
+hr_all <- purrr::map_dfr(
+  hr_files,
+  function(file){
+
+    subject <- stringr::str_extract(
+      basename(file),
+      "S[0-9]+"
+    )
+
+    read_csv(
+      file,
+      show_col_types = FALSE
+    ) %>%
+      mutate(
+        subject = subject
+      )
+
+  }
+)
+
+
+glimpse(hr_all)
+
+```
+
+# Load Condition Labels
+
+```{r}
+condition_files <- list.files(
+  here("data","processed"),
+  pattern="_ecg_filtered.csv$",
+  full.names=TRUE
+)
+
+
+condition_all <- purrr::map_dfr(
+
+  condition_files,
+
+  function(file){
+
+    subject <- stringr::str_extract(
+      basename(file),
+      "S[0-9]+"
+    )
+
+    read_csv(
+      file,
+      show_col_types = FALSE
+    ) %>%
+      dplyr::select(
+        time,
+        label
+      ) %>%
+      mutate(
+        subject=subject
+      )
+
+  }
+
+)
+
+
+head(condition_all)
+```
+
+# Match Heart Rate with Experimental Labels
+```{r}
+hr_condition <- hr_all %>%
+
+group_by(subject) %>%
+
+group_modify(
+
+~{
+
+labels <- condition_all %>%
+filter(subject == .y$subject) %>%
+arrange(time)
+
+
+if(nrow(labels)==0){
+
+return(tibble())
+
+}
+
+
+.x %>%
+mutate(
+
+label = labels$label[
+findInterval(
+time,
+labels$time
+)
+]
+
+)
+
+}
+
+) %>%
+
+ungroup() %>%
+
+filter(!is.na(label))
+
+
+head(hr_condition)
+```
+
+# Create Binary Stress Outcome
+
+```{r}
+
+model_data <- hr_condition %>%
+
+  mutate(
+
+    stress=factor(
+
+      ifelse(
+        label==2,
+        "Stress",
+        "Non-Stress"
+      )
+
+    )
+
+  )
+
+table(model_data$stress)
+
+```
+
+# Feature Engineering
+
+Each one-minute window is summarized using descriptive statistics.
+
+```{r}
+
+features <- model_data %>%
+
+  mutate(
+    window=floor(time/60)
+  ) %>%
+
+  group_by(
+    subject,
+    window,
+    stress
+  ) %>%
+
+  summarise(
+
+    mean_hr=mean(heart_rate),
+
+    median_hr=median(heart_rate),
+
+    sd_hr=sd(heart_rate),
+
+    min_hr=min(heart_rate),
+
+    max_hr=max(heart_rate),
+
+    range_hr=max_hr-min_hr,
+
+    iqr_hr=IQR(heart_rate),
+
+    .groups="drop"
+
+  ) %>%
+  mutate(
+    range_hr = max_hr - min_hr,
+    cv_hr = sd_hr / mean_hr
+  )
+
+head(features)
+
+```
+
+# Feature Summary
+
+```{r}
+
+summary(features)
+
+```
+
+# Distribution of Heart Rate
+
+```{r}
+
+ggplot(
+
+  features,
+
+  aes(
+    mean_hr,
+    fill=stress
+  )
+
+)+
+
+geom_histogram(
+  bins=30,
+  alpha=.7
+)+
+
+theme_minimal()+
+
+labs(
+
+title="Distribution of Mean Heart Rate",
+
+x="Mean Heart Rate (BPM)",
+
+y="Frequency"
+
+)
+
+```
+
+# Boxplots
+
+```{r}
+
+ggplot(
+
+features,
+
+aes(
+
+stress,
+
+mean_hr,
+
+fill=stress
+
+)
+
+)+
+
+geom_boxplot()+
+
+theme_minimal()+
+
+labs(
+
+title="Heart Rate by Physiological State",
+
+x="Condition",
+
+
+)
+
+```
+
+# Correlation Matrix
+
+```{r}
+
+numeric_features <- features %>%
+  dplyr::select(
+    mean_hr,
+    median_hr,
+    sd_hr,
+    min_hr,
+    max_hr,
+    range_hr,
+    iqr_hr,
+    cv_hr
+  ) %>%
+  mutate(
+    across(
+      everything(),
+      ~replace(.x, is.infinite(.x), NA)
+    )
+  ) %>%
+  drop_na()
+
+
+# Remove zero variance columns
+numeric_features <- numeric_features[
+  sapply(
+    numeric_features,
+    function(x) sd(x) > 0
+  )
+]
+
+
+cor_matrix <- cor(numeric_features)
+
+round(cor_matrix,2)
+```
+
+# Correlation Heatmap
+
+```{r}
+
+cor_df <-
+
+as.data.frame(as.table(cor_matrix))
+
+ggplot(
+
+cor_df,
+
+aes(
+
+Var1,
+
+Var2,
+
+fill=Freq
+
+)
+
+)+
+
+geom_tile()+
+
+geom_text(
+
+aes(label=round(Freq,2)),
+
+size=3
+
+)+
+
+scale_fill_gradient2()+
+
+theme_minimal()+
+
+theme(
+
+axis.text.x=
+
+element_text(
+
+angle=45,
+
+hjust=1
+
+)
+
+)+
+
+labs(
+
+title="Feature Correlation Matrix",
+
+x="",
+
+y=""
+
+)
+
+```
+
+# Principal Component Analysis
+
+```{r}
+
+pca <- prcomp(
+  numeric_features,
+  scale. = TRUE
+)
+
+summary(pca)
+
+```
+
+# PCA Visualization
+
+```{r}
+
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2]
+)
+
+
+ggplot(
+  pca_df,
+  aes(
+    PC1,
+    PC2
+  )
+)+
+geom_point(
+  alpha=.8,
+  size=2
+)+
+theme_minimal()+
+labs(
+  title="Principal Component Analysis",
+  subtitle="Heart Rate Features"
+)
+
+```
+
+# Create Training and Testing Sets
+
+```{r}
+# Remove invalid feature values before modeling
+
+features <- features %>%
+  mutate(
+    across(
+      c(
+        mean_hr,
+        median_hr,
+        sd_hr,
+        min_hr,
+        max_hr,
+        range_hr,
+        iqr_hr,
+        cv_hr
+      ),
+      ~replace(.x, is.infinite(.x), NA)
+    )
+  ) %>%
+  drop_na()
+
+set.seed(123)
+
+subjects <- unique(features$subject)
+
+train_subjects <- sample(
+  subjects,
+  size = floor(0.75 * length(subjects))
+)
+
+train <- features %>%
+  filter(subject %in% train_subjects)
+
+test <- features %>%
+  filter(!subject %in% train_subjects)
+
+```
+
+# Next
+
+The following sections compare several statistical learning algorithms:
+
+- Logistic Regression
+- Linear Discriminant Analysis
+- Quadratic Discriminant Analysis
+- k-Nearest Neighbors
+- Decision Trees
+
+using the same training and testing data.
+
+# Logistic Regression
+
+```{r}
+
+log_model <- glm(
+  stress ~ mean_hr +
+    median_hr +
+    sd_hr +
+    min_hr +
+    max_hr +
+    range_hr +
+    iqr_hr +
+    cv_hr,
+  data = train,
+  family = binomial()
+)
+
+summary(log_model)
+
+```
+
+# Logistic Regression Predictions
+
+```{r}
+
+log_prob <- predict(
+  log_model,
+  newdata = test,
+  type = "response"
+)
+
+log_pred <- factor(
+  ifelse(log_prob > 0.5,
+         "Stress",
+         "Non-Stress"),
+  levels = levels(test$stress)
+)
+
+log_auc <- roc(
+  response = test$stress,
+  predictor = log_prob
+)
+
+auc(log_auc)
+
+```
+
+# Logistic Regression Confusion Matrix
+
+```{r}
+
+table(
+  Actual = test$stress,
+  Predicted = log_pred
+)
+
+```
+
+# Linear Discriminant Analysis
+
+```{r}
+
+lda_model <- lda(
+  stress ~ mean_hr +
+    median_hr +
+    sd_hr +
+    min_hr +
+    max_hr +
+    range_hr +
+    iqr_hr +
+    cv_hr,
+  data = train
+)
+
+lda_model
+
+```
+
+# LDA Predictions
+
+```{r}
+
+lda_pred <- predict(
+  lda_model,
+  newdata = test
+)
+
+lda_class <- lda_pred$class
+
+lda_auc <- roc(
+  response = test$stress,
+  predictor = lda_pred$posterior[, "Stress"]
+)
+
+auc(lda_auc)
+
+```
+
+# LDA Confusion Matrix
+
+```{r}
+
+table(
+  Actual = test$stress,
+  Predicted = lda_class
+)
+
+```
+
+# Quadratic Discriminant Analysis
+
+```{r}
+
+qda_result <- tryCatch({
+
+  qda_model <- qda(
+    stress ~ mean_hr +
+      median_hr +
+      sd_hr +
+      min_hr +
+      max_hr +
+      range_hr +
+      iqr_hr +
+      cv_hr,
+    data = train
+  )
+
+  qda_model
+
+}, error = function(e){
+
+  message("QDA failed: insufficient samples for covariance estimation.")
+
+  NULL
+
+})
+```
+
+# QDA Predictions (if covariance estimation succeeds)
+```{r}
+if(!is.null(qda_result)){
+
+qda_pred <- predict(
+  qda_result,
+  newdata=test
+)
+
+qda_class <- qda_pred$class
+
+qda_auc <- roc(
+  response=test$stress,
+  predictor=qda_pred$posterior[, "Stress"]
+)
+
+auc(qda_auc)
+
+}
+
+```
+
+# QDA Confusion Matrix
+
+```{r}
+
+if(exists("qda_class")){
+
+table(
+  Actual = test$stress,
+  Predicted = qda_class
+)
+
+}
+```
+
+# Compare Classical Statistical Models
+
+```{r}
+
+tibble(
+
+  Model = c(
+    "Logistic Regression",
+    "Linear Discriminant Analysis",
+    "Quadratic Discriminant Analysis"
+  ),
+
+  AUC = c(
+    as.numeric(auc(log_auc)),
+    as.numeric(auc(lda_auc)),
+    ifelse(
+      exists("qda_auc"),
+      as.numeric(auc(qda_auc)),
+      NA
+    )
+  )
+
+)
+
+```
+
+# ROC Comparison
+
+```{r}
+
+plot(
+  log_auc,
+  col = "blue",
+  lwd = 2,
+  main = "ROC Curves"
+)
+
+plot(
+  lda_auc,
+  col = "red",
+  lwd = 2,
+  add = TRUE
+)
+
+if(exists("qda_auc")){
+
+plot(
+  qda_auc,
+  col = "darkgreen",
+  lwd = 2,
+  add = TRUE
+)
+
+}
+
+legend(
+
+  "bottomright",
+
+  legend = c(
+    "Logistic",
+    "LDA",
+    "QDA"
+  ),
+
+  col = c(
+    "blue",
+    "red",
+    "darkgreen"
+  ),
+
+  lwd = 2
+
+)
+
+```
+
+# Interpretation
+
+The three classical statistical learning methods make different assumptions regarding the relationship between physiological predictors and stress.
+
+Logistic regression models the probability of stress directly through a generalized linear model. LDA assumes that each class follows a multivariate normal distribution with a common covariance matrix, whereas QDA relaxes this assumption by estimating separate covariance structures for each class.
+
+Comparing these approaches provides insight into whether increasing model flexibility improves predictive performance for physiological stress classification.
+
+# k-Nearest Neighbors
+
+Unlike the previous methods, k-nearest neighbors is a nonparametric algorithm that classifies observations according to their nearest neighbors in feature space.
+
+```{r}
+
+train_x <- train %>%
+  dplyr::select(
+    -stress,
+    -subject,
+    -window
+  )
+
+test_x <- test %>%
+  dplyr::select(
+    -stress,
+    -subject,
+    -window
+  )
+
+
+train_scaled <- scale(train_x)
+
+test_scaled <- scale(
+  test_x,
+  center = attr(train_scaled, "scaled:center"),
+  scale = attr(train_scaled, "scaled:scale")
+)
+
+
+# Keep only complete observations
+
+train_complete <- complete.cases(train_scaled)
+test_complete <- complete.cases(test_scaled)
+
+
+train_scaled <- train_scaled[train_complete,]
+test_scaled <- test_scaled[test_complete,]
+
+train_stress <- train$stress[train_complete]
+test_stress <- test$stress[test_complete]
+
+```
+
+# Fit kNN
+
+```{r}
+
+k <- 5
+knn_pred <- knn(
+  train = train_scaled,
+  test = test_scaled,
+  cl = train_stress,
+  k = k,
+  prob = TRUE
+)
+
+```
+
+# Evaluate kNN
+
+```{r}
+
+table(
+  Actual = test_stress,
+  Predicted = knn_pred
+)
+
+knn_prob <- ifelse(
+  knn_pred == "Stress",
+  attr(knn_pred, "prob"),
+  1 - attr(knn_pred, "prob")
+)
+
+knn_auc <- roc(
+  response = test$stress,
+  predictor = knn_prob
+)
+
+auc(knn_auc)
+
+```
+
+---
+
+# Decision Tree
+
+Decision trees recursively partition the feature space into regions with similar physiological responses.
+
+```{r}
+tree_model <- rpart(
+  stress ~ mean_hr +
+    median_hr +
+    sd_hr +
+    min_hr +
+    max_hr +
+    range_hr +
+    iqr_hr +
+    cv_hr,
+  data = train,
+  method = "class"
+)
+
+tree_model
+
+```
+
+# Visualize Decision Tree
+
+```{r}
+
+rpart.plot(
+  tree_model,
+  type = 3,
+  fallen.leaves = TRUE,
+  extra = 104
+)
+
+```
+
+# Evaluate Decision Tree
+
+```{r}
+
+tree_prob <- predict(
+  tree_model,
+  newdata = test,
+  type = "prob"
+)
+
+tree_pred <- predict(
+  tree_model,
+  newdata = test,
+  type = "class"
+)
+
+table(
+  Actual = test_stress,
+  Predicted = tree_pred
+)
+
+tree_auc <- roc(
+  response = test$stress,
+  predictor = tree_prob[, "Stress"]
+)
+
+auc(tree_auc)
+
+```
+
+---
+
+# Variable Importance
+
+```{r}
+
+importance <- tree_model$variable.importance
+
+importance_df <- tibble(
+  Feature = names(importance),
+  Importance = as.numeric(importance)
+)
+
+importance_df
+
+```
+
+```{r}
+
+ggplot(
+  importance_df,
+  aes(
+    reorder(Feature, Importance),
+    Importance
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Decision Tree Variable Importance",
+    x = "",
+    y = "Importance"
+)
+
+```
+
+---
+
+# Overall Model Comparison
+
+```{r}
+results <- tibble(
+
+  Model = c(
+    "Logistic Regression",
+    "Linear Discriminant Analysis",
+    "k-Nearest Neighbors",
+    "Decision Tree"
+  ),
+
+  AUC = c(
+    as.numeric(auc(log_auc)),
+    as.numeric(auc(lda_auc)),
+    as.numeric(auc(knn_auc)),
+    as.numeric(auc(tree_auc))
+  )
+
+)
+
+
+if(exists("qda_auc")){
+
+  results <- add_row(
+    results,
+    Model = "Quadratic Discriminant Analysis",
+    AUC = as.numeric(auc(qda_auc))
+  )
+
+}
+
+
+results
+
+```
+
+---
+
+# Compare Predictive Performance
+
+```{r}
+
+ggplot(
+  results,
+  aes(
+    reorder(Model, AUC),
+    AUC
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  ylim(0.5, 1.0) +
+  theme_minimal() +
+  labs(
+    title = "Comparison of Statistical Learning Models",
+    x = "",
+    y = "Area Under the ROC Curve"
+)
+
+```
+
+---
+
+# ROC Comparison
+
+```{r}
+
+plot(
+  log_auc,
+  col = "blue",
+  lwd = 2,
+  main = "ROC Curve Comparison"
+)
+
+plot(
+  lda_auc,
+  col = "red",
+  add = TRUE,
+  lwd = 2
+)
+
+if(exists("qda_auc")){
+
+plot(
+  qda_auc,
+  col = "darkgreen",
+  add = TRUE,
+  lwd = 2
+)
+
+}
+
+plot(
+  knn_auc,
+  col = "orange",
+  add = TRUE,
+  lwd = 2
+)
+
+plot(
+  tree_auc,
+  col = "purple",
+  add = TRUE,
+  lwd = 2
+)
+
+legend_labels <- c(
+  "Logistic",
+  "LDA",
+  "kNN",
+  "Decision Tree"
+)
+
+legend_colors <- c(
+  "blue",
+  "red",
+  "orange",
+  "purple"
+)
+
+
+if(exists("qda_auc")){
+
+  legend_labels <- c(
+    legend_labels,
+    "QDA"
+  )
+
+  legend_colors <- c(
+    legend_colors,
+    "darkgreen"
+  )
+
+}
+
+
+legend(
+  "bottomright",
+  legend = legend_labels,
+  col = legend_colors,
+  lwd = 2
+)
+
+```
+
+---
+
+# Discussion
+
+Across multiple statistical learning approaches, physiological stress can be predicted using engineered heart rate features with varying degrees of accuracy. Linear models provide interpretable estimates of feature effects, while nonlinear approaches such as decision trees and k-nearest neighbors capture more flexible relationships between cardiovascular dynamics and experimental condition.
+
+Comparing multiple algorithms demonstrates that predictive performance depends not only on model complexity but also on the characteristics of the physiological features being analyzed.
+
+---
+
+# Conclusions
+
+This notebook extended previous analyses by comparing several statistical learning algorithms using a common feature engineering pipeline.
+
+Major findings include:
+
+- Physiological heart rate features contain substantial information for distinguishing stress from non-stress conditions.
+- Multiple statistical learning algorithms achieve competitive predictive performance.
+- Simple interpretable models remain strong baselines for physiological prediction.
+- Comparing diverse methods provides a more comprehensive understanding of predictive modeling than relying on a single algorithm.
+
+These analyses conclude the statistical modeling pipeline developed throughout this project, demonstrating how classical statistical inference, Bayesian methods, mixed-effects modeling, and modern statistical learning can be integrated to analyze physiological time-series data.
+
+# Hierarchical Bayesian Functional Model
+
+Rather than averaging heart rate within each window, we can model physiological responses while accounting for repeated observations from multiple participants.
+
+This hierarchical framework estimates an overall stress effect while allowing each participant to have an individualized baseline heart rate.
+
+```{r}
+
+bayes_model <- brm(
+  heart_rate ~ stress + (1 | subject),
+  data = model_data %>% 
+    slice_sample(n = 5000),
+  family = gaussian(),
+  chains = 2,
+  iter = 500,
+  warmup = 250,
+  seed = 123,
+  refresh = 100
+)
+
+summary(bayes_model)
+
+```
+
+---
+
+# Posterior Estimates
+
+```{r}
+
+plot(bayes_model)
+
+```
+
+---
+
+# Posterior Predictive Checks
+
+```{r}
+
+pp_check(bayes_model)
+
+```
+
+---
+
+# Estimated Stress Effect
+
+```{r}
+
+fixef(bayes_model)
+
+```
+
+---
+
+# Interpretation
+
+The Bayesian hierarchical model estimates both:
+
+- a population-level stress effect
+- subject-specific deviations
+
+This approach naturally accounts for repeated measurements and uncertainty while borrowing information across participants.
+
+Compared with classical mixed-effects models, Bayesian inference provides full posterior distributions rather than single point estimates.
+
+---
+
+# Discussion
+
+This notebook demonstrates how functional physiological signals can be analyzed using a modern Bayesian framework.
+
+Across this project we have progressed from exploratory visualization to increasingly sophisticated statistical methodology:
+
+- preprocessing raw ECG signals
+- estimating heart rate
+- computing HRV metrics
+- functional data analysis
+- statistical inference
+- machine learning
+- multisubject mixed-effects models
+- Bayesian hierarchical modeling
+
+Together these analyses illustrate a complete statistical workflow for physiological signal analysis using reproducible methods.
+
+---
+
+# Future Directions
+
+Several natural extensions remain.
+
+Future work could include:
+
+- nonlinear Gaussian process models
+- Bayesian functional regression
+- subject-specific change point detection
+- deep learning for physiological time series
+- wearable sensor applications
+- clinical stress monitoring
+- digital biomarkers for neurological and psychiatric disorders
+
+---
+
+# Conclusions
+
+This project demonstrates an end-to-end reproducible statistical analysis pipeline for physiological signal processing.
+
+Starting from raw ECG recordings in the WESAD dataset, the workflow transformed noisy physiological measurements into interpretable statistical models capable of characterizing stress-related cardiovascular responses.
+
+The analyses incorporated signal processing, feature engineering, exploratory visualization, functional data analysis, generalized linear models, machine learning, mixed-effects modeling, and Bayesian hierarchical inference.
+
+Beyond producing predictive models, the project emphasizes statistical methodology for handling complex biomedical data and illustrates how principled modeling can improve interpretation of physiological responses.
+
+The modular structure of this pipeline provides a foundation for future research integrating additional physiological modalities, personalized modeling strategies, and advanced Bayesian approaches for biomedical signal analysis.

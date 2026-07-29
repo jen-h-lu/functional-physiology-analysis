@@ -1,0 +1,244 @@
+---
+title: "Multi-Subject Validation of Physiological State Prediction"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological responses vary substantially between individuals. 
+Models developed from a single participant may capture subject-specific patterns rather than generalizable physiological relationships.
+
+This notebook extends the heart rate feature pipeline across multiple participants in the WESAD dataset.
+
+The goals are:
+
+1. Process multiple ECG recordings
+2. Extract heart rate features across participants
+3. Create subject-level prediction datasets
+4. Evaluate model generalization
+5. Investigate individual variability in physiological responses
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(tidymodels)
+library(pROC)
+
+processed_files <- list.files(
+  here("data", "processed"),
+  pattern = "_ecg.csv$",
+  full.names = TRUE
+)
+
+
+processed_files
+
+extract_hr_features <- function(file){
+
+  
+  ecg_data <- read_csv(
+    file,
+    show_col_types = FALSE
+  )
+
+
+  subject_id <- basename(file) %>%
+    str_remove("_ecg.csv")
+
+
+  fs <- 700
+
+
+  # Simple peak detection
+  peaks <- pracma::findpeaks(
+    ecg_data$ecg,
+    minpeakdistance = 350,
+    threshold = 0.5
+  )
+
+
+  if(is.null(peaks)){
+    return(NULL)
+  }
+
+
+  peak_indices <- peaks[,2]
+
+  peak_times <- ecg_data$time[peak_indices]
+
+  peak_times <- sort(peak_times)
+
+
+  rr_intervals <- diff(peak_times)
+
+
+  rr_intervals <- rr_intervals[
+    rr_intervals > 0.3 &
+    rr_intervals < 2
+  ]
+
+
+  heart_rate <- 60 / rr_intervals
+
+
+  hr_data <- tibble(
+    time = peak_times[2:length(peak_times)][
+      1:length(heart_rate)
+    ],
+    heart_rate = heart_rate
+  )
+
+
+  # Match labels
+
+  hr_data <- hr_data %>%
+    mutate(
+      label = ecg_data$label[
+        findInterval(
+          time,
+          ecg_data$time
+        )
+      ]
+    )
+
+
+  # Feature engineering
+
+  features <- hr_data %>%
+    mutate(
+      window = floor(time / 60)
+    ) %>%
+    group_by(window) %>%
+    summarise(
+      mean_hr = mean(heart_rate),
+      sd_hr = sd(heart_rate),
+      max_hr = max(heart_rate),
+      min_hr = min(heart_rate),
+      label = first(label),
+      subject = subject_id,
+      .groups="drop"
+    )
+
+
+  return(features)
+
+}
+
+all_features <- map_dfr(
+  processed_files,
+  extract_hr_features
+)
+
+
+head(all_features)
+
+model_data <- all_features %>%
+  mutate(
+    stress = ifelse(
+      label == 2,
+      "Stress",
+      "Non-Stress"
+    ),
+    stress = factor(stress)
+  )
+
+
+table(model_data$stress)
+
+model_data %>%
+  count(subject)
+
+set.seed(123)
+
+
+subjects <- unique(model_data$subject)
+
+
+test_subjects <- sample(
+  subjects,
+  size = floor(length(subjects)*0.25)
+)
+
+
+train_data <- model_data %>%
+  filter(
+    !subject %in% test_subjects
+  )
+
+
+test_data <- model_data %>%
+  filter(
+    subject %in% test_subjects
+  )
+
+
+test_subjects
+
+log_model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  fit(
+    stress ~ mean_hr + sd_hr + max_hr + min_hr,
+    data=train_data
+  )
+
+
+log_model
+
+predictions <- predict(
+  log_model,
+  test_data,
+  type="prob"
+) %>%
+  bind_cols(test_data)
+
+
+head(predictions)
+
+roc_curve <- roc(
+  predictions$stress,
+  predictions$.pred_Stress
+)
+
+
+auc_value <- auc(
+  roc_curve
+)
+
+
+auc_value
+
+plot(
+  roc_curve,
+  main="Cross-Subject Stress Classification ROC Curve"
+)
+
+tidy(
+  log_model$fit
+)
+
+predictions %>%
+  group_by(subject) %>%
+  summarise(
+    n=n(),
+    mean_prediction=mean(.pred_Stress),
+    .groups="drop"
+  )
+
+write_csv(
+  all_features,
+  here(
+    "data",
+    "processed",
+    "multisubject_features.csv"
+  )
+)
+```

@@ -1,0 +1,200 @@
+---
+title: "ECG Signal Preprocessing"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological signals often contain measurement noise, baseline drift, and artifacts that must be addressed before statistical analysis.
+
+This notebook preprocesses ECG recordings from the WESAD dataset by applying signal filtering techniques and preparing the data for downstream heart rate and heart rate variability analysis.
+
+The goals are:
+
+1. Load raw ECG recordings
+2. Apply a bandpass filter to reduce noise
+3. Compare raw and filtered signals
+4. Prepare ECG signals for cardiac feature extraction
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(signal)
+
+```
+
+
+# Load ECG Data
+
+We begin with participant S2 from the WESAD dataset.
+
+```{r}
+
+ecg_data <- read_csv(
+  here("data", "processed", "S2_ecg.csv")
+)
+
+glimpse(ecg_data)
+
+```
+
+
+# Sampling Frequency
+
+The WESAD chest ECG signal is sampled at approximately 700 Hz.
+
+```{r}
+
+fs <- 700
+
+fs
+
+```
+
+
+# Visualize Raw ECG
+
+The raw ECG signal contains both physiological information and potential noise.
+
+```{r}
+
+ecg_data %>%
+  slice(1:3500) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = ecg
+    )
+  ) +
+  geom_line() +
+  labs(
+    title = "Raw ECG Signal",
+    subtitle = "First 5 seconds of recording",
+    x = "Time (seconds)",
+    y = "ECG amplitude"
+  ) +
+  theme_minimal()
+
+```
+
+
+# ECG Filtering
+
+## Motivation
+
+ECG preprocessing commonly uses bandpass filtering to preserve cardiac frequency components while reducing baseline drift and high-frequency noise.
+
+A Butterworth filter is applied using:
+
+- Low cutoff: 0.5 Hz
+- High cutoff: 40 Hz
+
+This range preserves the primary ECG morphology needed for heartbeat detection.
+
+
+```{r}
+
+# Define Butterworth bandpass filter
+
+ecg_filter <- butter(
+  n = 4,
+  W = c(0.5, 40) / (fs / 2),
+  type = "pass"
+)
+
+
+# Apply zero-phase filtering
+
+filtered_ecg <- filtfilt(
+  ecg_filter,
+  ecg_data$ecg
+)
+
+
+# Add filtered signal
+
+ecg_data <- ecg_data %>%
+  mutate(
+    filtered_ecg = filtered_ecg
+  )
+
+
+```
+
+
+# Compare Raw and Filtered ECG
+
+```{r}
+
+ecg_data %>%
+  slice(1:3500) %>%
+  ggplot(
+    aes(x=time)
+  ) +
+  geom_line(
+    aes(y=ecg),
+    alpha=0.5
+  ) +
+  geom_line(
+    aes(y=filtered_ecg)
+  ) +
+  labs(
+    title="Raw vs Filtered ECG Signal",
+    subtitle="First 5 seconds of recording",
+    x="Time (seconds)",
+    y="ECG amplitude"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Inspect Filtered Signal
+
+The filtered signal will be used for detecting cardiac peaks and estimating beat-to-beat intervals.
+
+```{r}
+
+ecg_data %>%
+  select(
+    time,
+    filtered_ecg,
+    label
+  ) %>%
+  head()
+
+```
+
+
+# Save Preprocessed Data
+
+The filtered ECG signal is saved for downstream heart rate and HRV analysis.
+
+```{r}
+
+write_csv(
+  ecg_data,
+  here(
+    "data",
+    "processed",
+    "S2_ecg_filtered.csv"
+  )
+)
+
+```
+
+
+# Summary
+
+This preprocessing pipeline removes high-frequency noise and baseline variation from raw ECG recordings while preserving cardiac waveform characteristics.
+
+The resulting filtered ECG signal will be used for cardiac feature extraction, including R-peak detection, heart rate estimation, and heart rate variability analysis.

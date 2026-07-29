@@ -1,0 +1,293 @@
+---
+title: "Multi-Subject Validation of Physiological Responses"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological responses vary substantially between individuals. 
+
+This notebook extends the previous analyses from a single participant to multiple participants in the WESAD dataset.
+
+The goals are:
+
+1. Process heart rate features across multiple subjects
+2. Evaluate subject-level variability
+3. Compare physiological responses across conditions
+4. Fit hierarchical statistical models accounting for repeated measurements
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(lme4)
+library(broom.mixed)
+```
+
+
+# Load Subject-Level ECG Data
+
+The converted WESAD files contain ECG recordings for each participant.
+
+We use the processed ECG files generated during preprocessing.
+
+```{r}
+
+files <- list.files(
+  here("data", "processed"),
+  pattern = "_ecg.csv$",
+  full.names = TRUE
+)
+
+
+files
+
+```
+
+
+# Extract Subject Information
+
+```{r}
+
+subject_data <- tibble(
+  file = files
+) %>%
+  mutate(
+    subject = str_extract(
+      basename(file),
+      "S[0-9]+"
+    )
+  )
+
+
+subject_data
+
+```
+
+
+# Load Heart Rate Data
+
+The heart rate files generated previously are combined across participants.
+
+```{r}
+
+hr_files <- list.files(
+  here("data", "processed"),
+  pattern = "_heart_rate.csv$",
+  full.names = TRUE
+)
+
+
+hr_all <- map_dfr(
+  hr_files,
+  function(file){
+
+    subject <- str_extract(
+      basename(file),
+      "S[0-9]+"
+    )
+
+    read_csv(file) %>%
+      mutate(
+        subject = subject
+      )
+
+  }
+)
+
+
+glimpse(hr_all)
+
+```
+
+
+# Summary of Participants
+
+```{r}
+
+hr_all %>%
+  count(subject)
+
+```
+
+
+# Load Condition Labels
+
+Because heart rate occurs at detected beat locations, conditions are matched using the original ECG timestamps.
+
+```{r}
+
+ecg_files <- list.files(
+  here("data", "processed"),
+  pattern="_ecg_filtered.csv$",
+  full.names=TRUE
+)
+
+
+```
+
+
+# Create Subject-Level Condition Data
+
+```{r}
+
+condition_all <- map_dfr(
+  ecg_files,
+  function(file){
+
+    subject <- str_extract(
+      basename(file),
+      "S[0-9]+"
+    )
+
+
+    read_csv(file) %>%
+      select(time, label) %>%
+      mutate(
+        subject = subject
+      )
+
+  }
+)
+
+
+head(condition_all)
+
+```
+
+
+# Align Heart Rate With Conditions
+
+```{r}
+
+hr_condition_all <- hr_all %>%
+  group_by(subject) %>%
+  group_modify(
+    ~{
+
+      subject_id <- .y$subject
+
+      labels <- condition_all %>%
+        filter(subject == subject_id) %>%
+        arrange(time)
+
+      .x %>%
+        mutate(
+          label = labels$label[
+            findInterval(
+              time,
+              labels$time
+            )
+          ]
+        )
+
+    }
+  ) %>%
+  ungroup()
+```
+
+
+# Condition Summary Across Subjects
+
+```{r}
+
+hr_condition_all %>%
+  group_by(label) %>%
+  summarise(
+    mean_hr = mean(heart_rate),
+    sd_hr = sd(heart_rate),
+    n = n()
+  )
+
+```
+
+
+# Subject Variability
+
+Individuals may have different baseline heart rates.
+
+```{r}
+
+hr_condition_all %>%
+  ggplot(
+    aes(
+      x=subject,
+      y=heart_rate
+    )
+  ) +
+  geom_boxplot() +
+  labs(
+    title="Heart Rate Distribution Across Participants",
+    x="Subject",
+    y="Heart Rate (bpm)"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Mixed Effects Model
+
+Repeated measurements from the same participant are not independent.
+
+A mixed-effects model accounts for subject-specific baseline differences.
+
+```{r}
+
+hr_model <- lmer(
+  heart_rate ~ factor(label) + (1|subject),
+  data = hr_condition_all
+)
+
+
+summary(hr_model)
+
+```
+
+
+# Fixed Effects Estimates
+
+```{r}
+
+tidy(
+  hr_model,
+  effects="fixed"
+)
+
+```
+
+
+# Random Effects
+
+```{r}
+
+ranef(hr_model)
+
+```
+
+
+# Interpretation
+
+The mixed-effects model evaluates whether physiological conditions are associated with changes in heart rate while accounting for variability between individuals.
+
+This framework provides a foundation for:
+
+- hierarchical Bayesian models
+- personalized physiological modeling
+- longitudinal biomedical analysis
+- multimodal physiological prediction
+
+
+# Summary
+
+This analysis extends physiological modeling from an individual participant to a population-level framework.
+
+By incorporating subject-specific variability, the pipeline better reflects real-world biomedical data where repeated measurements are collected from heterogeneous individuals.

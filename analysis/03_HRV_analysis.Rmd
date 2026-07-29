@@ -1,0 +1,282 @@
+---
+title: "Heart Rate and Heart Rate Variability Analysis"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Heart rate variability (HRV) describes variation in the time intervals between consecutive heartbeats and provides information about autonomic nervous system regulation.
+
+This notebook extracts cardiac timing features from filtered ECG signals collected in the WESAD dataset.
+
+The goals are:
+
+1. Detect cardiac R-peaks from filtered ECG
+2. Calculate beat-to-beat (RR) intervals
+3. Estimate instantaneous heart rate
+4. Generate preliminary HRV features
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(signal)
+library(pracma)
+```
+
+
+# Load Filtered ECG Data
+
+The filtered ECG signal generated during preprocessing is used for cardiac feature extraction.
+
+```{r}
+
+ecg_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_ecg_filtered.csv"
+  )
+)
+
+glimpse(ecg_data)
+
+```
+
+
+# Sampling Frequency
+
+The chest ECG signal was collected at approximately 700 Hz.
+
+```{r}
+
+fs <- 700
+
+```
+
+
+# Visualize Filtered ECG
+
+```{r}
+
+ecg_data %>%
+  slice(1:3500) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = filtered_ecg
+    )
+  ) +
+  geom_line() +
+  labs(
+    title = "Filtered ECG Signal",
+    subtitle = "First 5 seconds of recording",
+    x = "Time (seconds)",
+    y = "Filtered ECG amplitude"
+  ) +
+  theme_minimal()
+
+```
+
+
+# R-Peak Detection
+
+The R-wave represents the largest positive deflection in the ECG waveform.
+
+The time difference between consecutive R-peaks produces RR intervals, which form the basis of heart rate and HRV analysis.
+
+```{r}
+
+ecg_signal <- ecg_data$filtered_ecg
+
+
+# Detect candidate peaks
+
+peaks <- findpeaks(
+  ecg_signal,
+  minpeakdistance = 350,
+  threshold = 0.5
+)
+
+
+```
+
+
+# Extract R-Peak Locations
+
+```{r}
+
+peak_indices <- peaks[,2]
+
+peak_times <- ecg_data$time[peak_indices]
+
+peak_times <- sort(peak_times)
+
+length(peak_times)
+
+head(peak_times)
+
+```
+
+
+# Visualize Detected Peaks
+
+Detected peaks are overlaid on the filtered ECG waveform to assess detection quality.
+
+```{r}
+
+ecg_data %>%
+  slice(1:3500) %>%
+  ggplot(
+    aes(
+      x=time,
+      y=filtered_ecg
+    )
+  ) +
+  geom_line() +
+  geom_point(
+    data = tibble(
+      time = peak_times,
+      value = ecg_data$filtered_ecg[peak_indices]
+    ) %>%
+      dplyr::filter(time <= 5),
+    aes(
+      x=time,
+      y=value
+    )
+  ) +
+  labs(
+    title="Detected ECG R-Peaks",
+    subtitle="First 5 seconds",
+    x="Time (seconds)",
+    y="Filtered ECG amplitude"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Calculate RR Intervals
+
+RR intervals represent the time between consecutive heartbeats.
+
+```{r}
+
+rr_intervals <- diff(peak_times)
+rr_intervals <- rr_intervals[
+  rr_intervals > 0.3 &
+  rr_intervals < 2
+]
+
+summary(rr_intervals)
+
+```
+
+
+# Convert RR Intervals to Heart Rate
+
+Heart rate is calculated as:
+
+\[
+HR = \frac{60}{RR}
+\]
+
+where RR is measured in seconds.
+
+```{r}
+
+heart_rate <- 60 / rr_intervals
+
+
+hr_data <- tibble(
+  time = peak_times[2:length(peak_times)][1:length(heart_rate)],
+  heart_rate = heart_rate
+)
+
+summary(hr_data$heart_rate)
+
+```
+
+
+# Heart Rate Over Time
+
+```{r}
+
+ggplot(
+  hr_data,
+  aes(
+    x=time,
+    y=heart_rate
+  )
+) +
+  geom_line() +
+  labs(
+    title="Instantaneous Heart Rate Over Time",
+    x="Time (seconds)",
+    y="Heart Rate (bpm)"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Preliminary HRV Summary
+
+These summary statistics describe variability in beat-to-beat intervals.
+
+```{r}
+
+hrv_summary <- tibble(
+
+  mean_hr = mean(hr_data$heart_rate),
+
+  sd_hr = sd(hr_data$heart_rate),
+
+  mean_rr = mean(rr_intervals),
+
+  sd_rr = sd(rr_intervals),
+
+  sdnn = sd(rr_intervals),
+
+  rmssd = sqrt(
+    mean(
+      diff(rr_intervals)^2
+    )
+  )
+
+)
+
+hrv_summary
+
+```
+
+
+# Save Extracted Heart Rate Data
+
+```{r}
+
+write_csv(
+  hr_data,
+  here(
+    "data",
+    "processed",
+    "S2_heart_rate.csv"
+  )
+)
+
+```
+
+
+# Summary
+
+This notebook transforms filtered ECG recordings into interpretable cardiac features.
+
+The extracted RR intervals and heart rate trajectories provide a lower-dimensional representation of physiological dynamics and serve as the foundation for future HRV analysis and statistical modeling.

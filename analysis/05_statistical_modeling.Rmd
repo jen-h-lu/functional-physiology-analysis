@@ -1,0 +1,185 @@
+---
+title: "Statistical Modeling of Physiological Responses"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological measurements often exhibit systematic changes across experimental conditions.
+
+This notebook applies statistical modeling approaches to quantify associations between experimental state and heart rate response.
+
+The goals are:
+
+1. Compare heart rate across physiological conditions
+2. Model condition-associated changes
+3. Quantify uncertainty in estimated effects
+4. Evaluate model assumptions
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(broom)
+
+```
+
+
+# Load Heart Rate Data
+
+```{r}
+
+hr_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_heart_rate.csv"
+  )
+)
+
+head(hr_data)
+
+```
+
+
+# Load Condition Information
+
+```{r}
+
+ecg_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_ecg_filtered.csv"
+  )
+)
+
+condition_data <- ecg_data %>%
+  dplyr::select(
+    time,
+    label
+  )
+
+
+```
+
+
+# Align Conditions
+
+```{r}
+
+hr_condition <- hr_data %>%
+  mutate(
+    label = condition_data$label[
+      findInterval(
+        time,
+        condition_data$time
+      )
+    ]
+  )
+
+
+hr_condition <- hr_condition %>%
+  filter(!is.na(label))
+
+
+```
+
+
+# Convert Conditions to Factors
+
+```{r}
+
+hr_condition <- hr_condition %>%
+  mutate(
+    condition = factor(label)
+  )
+
+
+table(hr_condition$condition)
+
+```
+
+
+# Exploratory Comparison
+
+```{r}
+
+hr_condition %>%
+  ggplot(
+    aes(
+      x=condition,
+      y=heart_rate
+    )
+  ) +
+  geom_boxplot() +
+  labs(
+    title="Heart Rate Across Experimental Conditions",
+    x="Condition",
+    y="Heart Rate (bpm)"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Linear Model
+
+We model heart rate as a function of experimental condition.
+
+```{r}
+
+hr_model <- lm(
+  heart_rate ~ condition,
+  data = hr_condition
+)
+
+
+summary(hr_model)
+
+```
+
+
+# Estimated Effects
+
+```{r}
+
+tidy(hr_model)
+
+```
+
+
+# Model Diagnostics
+
+```{r}
+
+par(mfrow=c(2,2))
+
+plot(hr_model)
+
+```
+
+
+# Interpretation
+
+The regression model estimates average changes in heart rate associated with each physiological condition relative to the reference state.
+
+Future extensions include:
+
+- mixed-effects models across participants
+- Bayesian hierarchical models
+- functional regression approaches
+- machine learning prediction of physiological states
+
+
+# Summary
+
+This analysis demonstrates statistical modeling of dynamic physiological signals and provides a foundation for more advanced longitudinal and hierarchical modeling.

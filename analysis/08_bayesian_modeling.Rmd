@@ -1,0 +1,239 @@
+---
+title: "Bayesian Hierarchical Modeling of Physiological Responses"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological responses vary across individuals. 
+A hierarchical modeling framework allows population-level effects to be estimated while accounting for participant-specific variability.
+
+This notebook develops a Bayesian mixed-effects model for heart rate responses across participants in the WESAD dataset.
+
+The goals are:
+
+1. Construct a multi-subject physiological dataset
+2. Model stress-related heart rate changes
+3. Estimate uncertainty using Bayesian inference
+4. Quantify individual differences in baseline physiology
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(brms)
+library(bayesplot)
+library(posterior)
+
+```
+
+
+# Load Multi-Subject Data
+
+The feature dataset generated in the previous analysis contains heart rate summaries across participants.
+
+```{r}
+
+features <- read_csv(
+  here(
+    "data",
+    "processed",
+    "multisubject_features.csv"
+  )
+)
+
+head(features)
+
+```
+
+
+# Create Stress Outcome
+
+Stress corresponds to WESAD label 2.
+
+```{r}
+
+model_data <- features %>%
+  mutate(
+    stress = ifelse(
+      label == 2,
+      1,
+      0
+    )
+  )
+
+
+model_data %>%
+  count(stress)
+
+```
+
+
+# Explore Participant Variability
+
+Participants exhibit different baseline heart rate distributions.
+
+```{r}
+
+model_data %>%
+  ggplot(
+    aes(
+      x=subject,
+      y=mean_hr
+    )
+  ) +
+  geom_boxplot() +
+  labs(
+    title="Heart Rate Variation Across Participants",
+    x="Participant",
+    y="Mean Heart Rate"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Bayesian Hierarchical Model
+
+We model mean heart rate as a function of stress while allowing each participant to have their own baseline.
+
+```{r message=FALSE}
+
+bayes_model <- brm(
+
+  mean_hr ~ stress + 
+    (1 | subject),
+
+  data=model_data,
+
+  family=gaussian(),
+
+  prior=c(
+
+    prior(
+      normal(0,10),
+      class="b"
+    ),
+
+    prior(
+      exponential(1),
+      class="sd"
+    )
+
+  ),
+
+  chains=4,
+  iter=2000,
+  warmup=1000,
+  seed=123
+
+)
+
+
+```
+
+
+# Model Summary
+
+```{r}
+
+summary(bayes_model)
+
+```
+
+
+# Posterior Distributions
+
+Bayesian inference provides full posterior distributions rather than only point estimates.
+
+```{r}
+
+plot(
+  bayes_model
+)
+
+```
+
+
+# Stress Effect Estimate
+
+The stress coefficient represents the estimated change in heart rate associated with stress.
+
+```{r}
+
+posterior_samples <- posterior_samples(
+  bayes_model
+)
+
+
+posterior_samples %>%
+  select(
+    b_stress
+  ) %>%
+  summary()
+
+```
+
+
+# Credible Interval Visualization
+
+```{r}
+
+mcmc_areas(
+  posterior_samples,
+  pars="b_stress"
+)
+
+```
+
+
+# Participant Random Effects
+
+Individual baseline differences are captured through participant-level effects.
+
+```{r}
+
+ranef(bayes_model)
+
+```
+
+
+# Posterior Predictive Checking
+
+We evaluate whether simulated data from the model resemble observed physiological patterns.
+
+```{r}
+
+pp_check(
+  bayes_model
+)
+
+```
+
+
+# Summary
+
+This analysis demonstrates Bayesian hierarchical modeling of physiological signals.
+
+The model:
+
+- estimates population-level stress effects
+- accounts for individual physiological differences
+- quantifies uncertainty through posterior distributions
+- provides a framework for personalized biomedical modeling
+
+
+Future extensions include:
+
+- Bayesian functional regression
+- time-varying hierarchical models
+- multimodal EEG and ECG integration
+- personalized physiological prediction

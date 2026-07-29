@@ -1,0 +1,185 @@
+---
+title: "Exploratory Data Analysis of Physiological Signals"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological signals are dynamic measurements that contain temporal information about changes in human state.
+
+This notebook performs exploratory analysis of electrocardiography (ECG) signals from the WESAD (Wearable Stress and Affect Detection) dataset prior to statistical modeling.
+
+The goals are:
+
+1. Inspect the structure of ECG recordings
+2. Understand signal characteristics and recording duration
+3. Visualize physiological signals over time
+4. Examine experimental condition distributions
+5. Prepare the data for downstream signal processing and functional analysis
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(janitor)
+
+```
+
+
+# Load ECG Data
+
+We begin with one participant (S2) to understand the structure of the physiological recordings.
+
+```{r}
+
+ecg_data <- read_csv(
+  here("data", "processed", "S2_ecg.csv")
+)
+
+glimpse(ecg_data)
+
+```
+
+
+# Define Experimental Conditions
+
+The WESAD dataset contains multiple physiological states represented by numerical labels. For interpretability, labels are converted into descriptive condition names.
+
+```{r}
+
+ecg_data <- ecg_data %>%
+  mutate(
+    condition = case_when(
+      label == 0 ~ "Transient",
+      label == 1 ~ "Baseline",
+      label == 2 ~ "Stress",
+      label == 3 ~ "Amusement",
+      label == 4 ~ "Meditation",
+      label == 6 ~ "Recovery",
+      label == 7 ~ "Unknown"
+    )
+  )
+
+count(ecg_data, condition)
+
+```
+
+
+# Basic Summary
+
+Summary statistics provide an overview of the ECG amplitude distribution and recording characteristics.
+
+```{r}
+
+summary(ecg_data)
+
+```
+
+
+# Signal Length
+
+The ECG recording contains measurements sampled at approximately 700 Hz.
+
+```{r}
+
+nrow(ecg_data)
+
+max(ecg_data$time)
+
+```
+
+
+# Statistical Considerations
+
+ECG measurements are collected repeatedly over time and therefore exhibit temporal dependence.
+
+Individual ECG measurements should not be treated as independent observations. Instead, downstream analyses will use signal processing, feature extraction, and functional representations to summarize physiological responses while accounting for the structure of longitudinal data.
+
+
+# Visualizing Raw ECG
+
+The raw ECG waveform is visualized over the first five seconds of recording.
+
+```{r}
+
+ecg_data %>%
+  slice(1:3500) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = ecg
+    )
+  ) +
+  geom_line() +
+  labs(
+    title = "Raw ECG Signal from Participant S2",
+    subtitle = "First 5 seconds of recording",
+    x = "Time (seconds)",
+    y = "ECG amplitude"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Condition Distribution
+
+The number of observations in each physiological condition is examined to assess class balance.
+
+```{r}
+
+ecg_data %>%
+  count(condition) %>%
+  mutate(
+    proportion = n / sum(n)
+  )
+
+```
+
+
+# ECG Signal Across Experimental Conditions
+
+ECG recordings from baseline, stress, and amusement conditions are visualized to explore potential differences in physiological dynamics.
+
+```{r}
+
+ecg_data %>%
+  filter(
+    condition %in% c(
+      "Baseline",
+      "Stress",
+      "Amusement"
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = ecg,
+      color = condition
+    )
+  ) +
+  geom_line(alpha = 0.5) +
+  labs(
+    title = "ECG Signal Across Experimental Conditions",
+    x = "Time (seconds)",
+    y = "ECG amplitude",
+    color = "Condition"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Summary
+
+This exploratory analysis confirms the structure and characteristics of the WESAD ECG recordings. The data consist of high-frequency physiological measurements collected longitudinally across multiple experimental conditions.
+
+Because physiological signals are temporally dependent, subsequent analyses will focus on preprocessing, heart rate extraction, heart rate variability analysis, and functional representations of physiological responses.

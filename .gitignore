@@ -1,0 +1,20 @@
+# Raw WESAD dataset
+data/WESAD/
+
+# Ignore generated HTML reports
+analysis/*.html
+
+# Ignore large processed CSVs
+data/processed/*.csv
+
+# Keep the final feature dataset
+!data/processed/multisubject_features.csv
+
+# RStudio files
+.Rhistory
+.RData
+.Ruserdata
+
+# OS files
+.DS_Store
+Thumbs.db

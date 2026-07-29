@@ -1,0 +1,278 @@
+---
+title: "Machine Learning Prediction of Physiological States"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological signals contain patterns that may allow prediction of human state.
+
+This notebook develops predictive models using heart rate features extracted from ECG recordings.
+
+The goals are:
+
+1. Engineer physiological predictors
+2. Define stress classification targets
+3. Train statistical learning models
+4. Evaluate predictive performance
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(tidymodels)
+library(pROC)
+
+```
+
+
+# Load Heart Rate Data
+
+```{r}
+
+hr_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_heart_rate.csv"
+  )
+)
+
+```
+
+
+# Load Conditions
+
+```{r}
+
+ecg_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_ecg_filtered.csv"
+  )
+)
+
+
+condition_data <- ecg_data %>%
+  dplyr::select(
+    time,
+    label
+  )
+
+
+```
+
+
+# Align Conditions
+
+```{r}
+
+hr_condition <- hr_data %>%
+  mutate(
+    label = condition_data$label[
+      findInterval(
+        time,
+        condition_data$time
+      )
+    ]
+  ) %>%
+  filter(!is.na(label))
+
+
+```
+
+
+# Create Prediction Target
+
+Stress conditions in WESAD correspond to label 2.
+
+We create a binary classification problem.
+
+```{r}
+
+model_data <- hr_condition %>%
+  mutate(
+    stress = ifelse(
+      label == 2,
+      "Stress",
+      "Non-Stress"
+    ),
+    stress = factor(stress)
+  )
+
+
+table(model_data$stress)
+
+```
+
+
+# Feature Engineering
+
+We summarize heart rate into short temporal windows.
+
+```{r}
+
+features <- model_data %>%
+  mutate(
+    window = floor(time / 60)
+  ) %>%
+  group_by(window, stress) %>%
+  summarise(
+    mean_hr = mean(heart_rate),
+    sd_hr = sd(heart_rate),
+    max_hr = max(heart_rate),
+    min_hr = min(heart_rate),
+    .groups="drop"
+  )
+
+
+head(features)
+
+```
+
+
+# Train/Test Split
+
+```{r}
+
+set.seed(123)
+
+split <- initial_split(
+  features,
+  prop = 0.75,
+  strata = stress
+)
+
+train <- training(split)
+
+test <- testing(split)
+
+
+```
+
+
+# Logistic Regression Model
+
+```{r}
+
+log_model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  fit(
+    stress ~ mean_hr + sd_hr + max_hr + min_hr,
+    data=train
+  )
+
+
+log_model
+
+```
+
+
+# Predictions
+
+```{r}
+
+predictions <- predict(
+  log_model,
+  test,
+  type="prob"
+) %>%
+  bind_cols(test)
+
+
+head(predictions)
+
+```
+
+
+# ROC Curve
+
+```{r}
+
+roc_curve <- roc(
+  predictions$stress,
+  predictions$.pred_Stress
+)
+
+
+auc(roc_curve)
+
+```
+
+# Cross-Validation
+
+```{r}
+
+```{r}
+
+set.seed(123)
+
+folds <- vfold_cv(
+  train,
+  v = 5,
+  strata = stress
+)
+
+
+log_recipe <- recipe(
+  stress ~ mean_hr + sd_hr + max_hr + min_hr,
+  data = train
+)
+
+
+log_workflow <- workflow() %>%
+  add_recipe(log_recipe) %>%
+  add_model(
+    logistic_reg() %>%
+      set_engine("glm")
+  )
+
+
+cv_results <- fit_resamples(
+  log_workflow,
+  resamples = folds,
+  metrics = metric_set(
+    roc_auc,
+    accuracy
+  )
+)
+
+
+collect_metrics(cv_results)
+
+
+```
+
+
+# ROC Visualization
+
+```{r}
+
+plot(
+  roc_curve,
+  main="ROC Curve for Stress Classification"
+)
+
+```
+
+
+# Summary
+
+This notebook demonstrates predictive modeling of physiological state using cardiac features.
+
+Future extensions include:
+
+- random forest models
+- Bayesian classification
+- mixed-effects machine learning
+- multi-subject validation
+- multimodal EEG and ECG integration

@@ -1,0 +1,212 @@
+---
+title: "Functional Analysis of Heart Rate Dynamics"
+author: "Jenna Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Overview
+
+Physiological responses are dynamic processes that evolve over time rather than static measurements.
+
+This notebook explores heart rate trajectories as functional data and investigates how cardiac responses vary across experimental conditions in the WESAD dataset.
+
+The goals are:
+
+1. Visualize heart rate trajectories
+2. Map cardiac responses to experimental conditions
+3. Smooth physiological curves
+4. Compare temporal patterns across conditions
+
+
+# Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(here)
+library(fda)
+library(data.table)
+```
+
+
+# Load Heart Rate Data
+
+```{r}
+
+hr_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_heart_rate.csv"
+  )
+)
+
+glimpse(hr_data)
+
+```
+
+
+# Load Condition Labels
+
+The original ECG data contains experimental condition labels.
+
+```{r}
+
+ecg_data <- read_csv(
+  here(
+    "data",
+    "processed",
+    "S2_ecg_filtered.csv"
+  )
+)
+
+
+condition_data <- ecg_data %>%
+  dplyr::select(
+    time,
+    label
+  )
+
+
+```
+
+
+# Match Heart Rate to Conditions
+
+Heart rate is measured at detected beat locations, while labels are sampled at the ECG frequency.
+
+The nearest time point is used to associate physiological states with heart rate measurements.
+
+```{r}
+
+hr_condition <- data.table(hr_data)
+
+condition_table <- data.table(condition_data)
+
+hr_condition <- condition_table[
+  hr_condition,
+  on = .(
+    time = time
+  ),
+  roll = "nearest"
+]
+
+hr_condition <- as_tibble(hr_condition)
+
+
+head(hr_condition)
+
+```
+
+
+# Condition Summary
+
+```{r}
+
+hr_condition %>%
+  dplyr::group_by(label) %>%
+  dplyr::summarise(
+    mean_hr = mean(heart_rate, na.rm=TRUE),
+    sd_hr = sd(heart_rate, na.rm=TRUE),
+    n=dplyr::n()
+  )
+
+```
+
+
+# Visualize Heart Rate Trajectory
+
+```{r}
+
+ggplot(
+  hr_condition,
+  aes(
+    x=time,
+    y=heart_rate
+  )
+) +
+  geom_line(alpha=0.5) +
+  labs(
+    title="Heart Rate Trajectory Across Recording",
+    x="Time (seconds)",
+    y="Heart Rate (bpm)"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Smooth Heart Rate Function
+
+Physiological signals contain short-term variability. Functional data analysis represents the underlying trajectory using smooth basis functions.
+
+```{r}
+
+time_grid <- hr_condition$time
+
+basis <- create.bspline.basis(
+  rangeval = range(time_grid),
+  nbasis = 25
+)
+
+
+hr_fd <- Data2fd(
+  argvals = time_grid,
+  y = hr_condition$heart_rate,
+  basisobj = basis
+)
+
+
+hr_fd
+
+```
+
+
+# Plot Functional Representation
+
+```{r}
+
+plot(
+  hr_fd,
+  main="Smoothed Heart Rate Functional Representation",
+  xlab="Time (seconds)",
+  ylab="Heart Rate"
+)
+
+```
+
+
+# Functional Derivative
+
+The first derivative describes the rate of change of heart rate over time.
+
+```{r}
+hr_velocity <- fda::deriv.fd(
+  hr_fd,
+  Lfdobj = 1
+)
+
+plot(
+  hr_velocity,
+  main="Rate of Change of Heart Rate",
+  xlab="Time",
+  ylab="dHR/dt"
+)
+
+```
+
+
+# Summary
+
+This notebook represents physiological signals as continuous functions rather than isolated measurements.
+
+Functional representations allow future modeling of:
+
+- stress-response trajectories
+- individual variability
+- longitudinal physiological patterns
+- condition-specific cardiac dynamics
